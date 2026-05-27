@@ -13,12 +13,12 @@ required_hardware:
   - battery_adc
   - ramfs
 depends:
-  - AnotcCommon
+  - verdancy-org/LPFilter@main
 === END MANIFEST === */
 // clang-format on
 
-#include "AnotcCommon.hpp"
 #include "adc.hpp"
+#include "BatteryMonitorDeps.hpp"
 #include "app_framework.hpp"
 #include "message.hpp"
 #include "ramfs.hpp"
@@ -31,17 +31,26 @@ depends:
 #include <cstring>
 
 class BatteryMonitor : public LibXR::Application {
- public:
-  BatteryMonitor(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-                 const char* data_topic_name, uint32_t sample_period_ms,
+public:
+  struct Data {
+    float voltage_v = 0.0f;
+    float cell_voltage_v = 0.0f;
+    uint8_t cell_count = 0;
+    uint8_t power_state = 0;
+    bool low = false;
+    bool critical = false;
+  };
+
+  BatteryMonitor(LibXR::HardwareContainer &hw, LibXR::ApplicationManager &app,
+                 const char *data_topic_name, uint32_t sample_period_ms,
                  float divider_ratio, size_t task_stack_depth)
-      : sample_period_ms_(sample_period_ms),
-        divider_ratio_(divider_ratio),
+      : sample_period_ms_(sample_period_ms), divider_ratio_(divider_ratio),
         topic_(data_topic_name, sizeof(state_), nullptr, true, true, true),
         adc_(hw.template FindOrExit<LibXR::ADC>({"battery_adc"})),
         cmd_file_(LibXR::RamFS::CreateFile("battery", CommandFunc, this)) {
     ASSERT(sample_period_ms_ > 0);
     ASSERT(divider_ratio_ > 0.0f);
+    voltage_filter_.SetAlpha(0.05f);
 
     app.Register(*this);
     hw.template FindOrExit<LibXR::RamFS>({"ramfs"})->Add(cmd_file_);
@@ -52,20 +61,19 @@ class BatteryMonitor : public LibXR::Application {
 
   void OnMonitor() override {}
 
- private:
+private:
   void Update() {
     const float pin_voltage = adc_->Read();
     const float voltage = pin_voltage * divider_ratio_;
 
-    if (!filter_initialized_) {
-      filtered_voltage_ = voltage;
-      filter_initialized_ = true;
+    if (!voltage_filter_initialized_) {
+      voltage_filter_.Reset(voltage);
+      voltage_filter_initialized_ = true;
     } else {
-      filtered_voltage_ =
-          Anotc::LowPass(filtered_voltage_, voltage, 0.05f);
+      voltage_filter_.Update(voltage);
     }
 
-    state_.voltage_v = filtered_voltage_;
+    state_.voltage_v = voltage_filter_.State();
 
     if (state_.voltage_v < 1.0f) {
       state_.cell_count = 0;
@@ -76,7 +84,7 @@ class BatteryMonitor : public LibXR::Application {
       return;
     }
 
-    state_.cell_count = static_cast<uint8_t>(Anotc::Clamp(
+    state_.cell_count = static_cast<uint8_t>(std::clamp(
         static_cast<int>(std::lround(state_.voltage_v / 4.1f)), 1, 6));
     state_.cell_voltage_v =
         state_.voltage_v / static_cast<float>(state_.cell_count);
@@ -92,7 +100,7 @@ class BatteryMonitor : public LibXR::Application {
     }
   }
 
-  static void ThreadFunc(BatteryMonitor* battery_monitor) {
+  static void ThreadFunc(BatteryMonitor *battery_monitor) {
     while (true) {
       battery_monitor->Update();
       battery_monitor->topic_.Publish(battery_monitor->state_);
@@ -100,11 +108,12 @@ class BatteryMonitor : public LibXR::Application {
     }
   }
 
-  static int CommandFunc(BatteryMonitor* battery_monitor, int argc, char** argv) {
+  static int CommandFunc(BatteryMonitor *battery_monitor, int argc,
+                         char **argv) {
     if (argc == 1) {
-      LibXR::STDIO::Printf("Usage:\r\n");
-      LibXR::STDIO::Printf(
-          "  show [time_ms] [interval_ms] - Print battery status periodically.\r\n");
+      LibXR::STDIO::Printf<"Usage:\r\n">();
+      LibXR::STDIO::Printf<
+          "  show [time_ms] [interval_ms] - Print battery status periodically.\r\n">();
       return 0;
     }
 
@@ -114,8 +123,8 @@ class BatteryMonitor : public LibXR::Application {
       interval_ms = std::clamp(interval_ms, 10, 1000);
 
       while (time_ms > 0) {
-        LibXR::STDIO::Printf(
-            "Battery: %.2fV | cells=%d | per_cell=%.2fV | low=%d | critical=%d\r\n",
+        LibXR::STDIO::Printf<
+            "Battery: %.2fV | cells=%d | per_cell=%.2fV | low=%d | critical=%d\r\n">(
             battery_monitor->state_.voltage_v,
             static_cast<int>(battery_monitor->state_.cell_count),
             battery_monitor->state_.cell_voltage_v,
@@ -127,17 +136,17 @@ class BatteryMonitor : public LibXR::Application {
       return 0;
     }
 
-    LibXR::STDIO::Printf("Error: Invalid arguments.\r\n");
+    LibXR::STDIO::Printf<"Error: Invalid arguments.\r\n">();
     return -1;
   }
 
   uint32_t sample_period_ms_ = 50;
   float divider_ratio_ = 11.0f;
-  bool filter_initialized_ = false;
-  float filtered_voltage_ = 0.0f;
-  Anotc::BatteryState state_;
+  bool voltage_filter_initialized_ = false;
+  LPFilter<float> voltage_filter_;
+  Data state_;
   LibXR::Topic topic_;
-  LibXR::ADC* adc_;
+  LibXR::ADC *adc_;
   LibXR::RamFS::File cmd_file_;
   LibXR::Thread thread_;
 };
