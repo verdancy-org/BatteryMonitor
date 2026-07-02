@@ -45,7 +45,7 @@ public:
                  const char *data_topic_name, uint32_t sample_period_ms,
                  float divider_ratio, size_t task_stack_depth)
       : sample_period_ms_(sample_period_ms), divider_ratio_(divider_ratio),
-        topic_(data_topic_name, sizeof(state_), nullptr, true, true, true),
+        topic_(LibXR::Topic::CreateTopic<Data>(data_topic_name, nullptr, true)),
         adc_(hw.template FindOrExit<LibXR::ADC>({"battery_adc"})),
         cmd_file_(LibXR::RamFS::CreateFile("battery", CommandFunc, this)) {
     ASSERT(sample_period_ms_ > 0);
