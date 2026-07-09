@@ -2,7 +2,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: Battery voltage monitor module
+module_description: XRobot Module for battery voltage monitoring
 constructor_args:
   - data_topic_name: "battery_state"
   - sample_period_ms: 50
